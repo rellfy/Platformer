@@ -24,15 +24,15 @@ namespace CharacterControllers {
 
         public bool IsColliding => this.below || this.right || this.left || this.above;
 
-        public override string ToString() => $"r={this.right}, "+
+        public override string ToString() => $"r={this.right}, " +
             $"l={this.left}, a={this.above}, b={this.below}, movingDownSlope={this.movingDownSlope}, " +
             $"angle={this.slopeAngle}, wasGroundedLastFrame={this.wasGroundedLastFrame}, " +
             $"becameGroundedThisFrame={this.becameGroundedThisFrame}";
 
         public void Reset() {
             this.right =
-                this.left = 
-                this.above = 
+                this.left =
+                this.above =
                 this.below =
                 this.becameGroundedThisFrame =
                 this.movingDownSlope = false;
@@ -44,7 +44,7 @@ namespace CharacterControllers {
     [RequireComponent(typeof(BoxCollider2D), typeof(Rigidbody2D))]
     public class Platformer : MonoBehaviour {
 
-        private const float krayOffsetFloatFudgeFactor = 0.001f;
+        private const float kRayOffsetFloatFudgeFactor = 0.001f;
         private readonly float slopeLimitTangent = Mathf.Tan(75f * Mathf.Deg2Rad);
         private float horizontalDistanceBetweenRays;
         private bool isGoingUpSlope;
@@ -53,14 +53,11 @@ namespace CharacterControllers {
         private float rayOffset = 0.02f;
         private float verticalDistanceBetweenRays;
         private readonly List<RaycastHit2D> frameRaycastCache = new List<RaycastHit2D>(2);
-        [SerializeField]
-        private readonly LayerMask oneWayPlatformMask = 0;
         private RaycastHit2D raycastHit;
         private CharacterRaycastOrigins raycastOrigins;
 
         public bool ignoreOneWayPlatformsThisFrame;
         public float jumpingThreshold = 0.07f;
-        public LayerMask platformMask = 0;
         [Range(0f, 90f)]
         public float slopeLimit = 30f;
         [Range(2, 20)]
@@ -81,7 +78,9 @@ namespace CharacterControllers {
                 new Keyframe(-90f, 1.5f),
                 new Keyframe(0f, 1f),
                 new Keyframe(90f, 0f));
+        public LayerMask platformMask = 0;
         public LayerMask layerTriggerMask = 0;
+        public LayerMask oneWayPlatformMask = 0;
         [HideInInspector]
         [NonSerialized]
         public Vector3 velocity;
@@ -104,11 +103,6 @@ namespace CharacterControllers {
         public event Action<Collider2D> OnTriggerStay;
         public event Action<Collider2D> OnTriggerExit;
 
-        [Conditional("DEBUG_CC2D_RAYS")]
-        private void DrawRay(Vector3 start, Vector3 dir, Color color) {
-            Debug.DrawRay(start, dir, color);
-        }
-
         public void Move(Vector3 deltaMovement) {
             this.collisionState.wasGroundedLastFrame = this.collisionState.below;
 
@@ -124,10 +118,10 @@ namespace CharacterControllers {
                 HandleVerticalSlope(ref deltaMovement);
 
             if (deltaMovement.x != 0f)
-                MoveAxis(true, ref deltaMovement);
+                MoveHorizontally(ref deltaMovement);
 
             if (deltaMovement.y != 0f)
-                MoveAxis(false, ref deltaMovement);
+                MoveVertically(ref deltaMovement);
 
             // Update current state.
             deltaMovement.z = 0;
@@ -176,9 +170,12 @@ namespace CharacterControllers {
             this.horizontalDistanceBetweenRays = colliderUseableWidth / (this.totalVerticalRays - 1);
         }
 
-        private void Awake() {
-            this.boxCollider2D = GetComponent<BoxCollider2D>();
-            this.rigidBody2D = GetComponent<Rigidbody2D>();
+        protected virtual void Awake() {
+            this.boxCollider2D = gameObject.GetComponent<BoxCollider2D>();
+            this.rigidBody2D = gameObject.GetComponent<Rigidbody2D>();
+
+            this.rigidBody2D.bodyType = RigidbodyType2D.Kinematic;
+            this.boxCollider2D.isTrigger = true;
 
             // Add one-way platforms to normal platform mask that the character can land on them from above.
             this.platformMask |= this.oneWayPlatformMask;
@@ -222,95 +219,89 @@ namespace CharacterControllers {
             this.raycastOrigins.bottomLeft = modifiedBounds.min;
         }
 
-        /// <summary>
-        /// Move the character on an axis.
-        /// </summary>
-        /// <param name="x">Move character on the X axis. If false, moves on the Y axis.</param>
-        /// <param name="deltaMovement">This character's current delta movement vector.</param>
-        private void MoveAxis(bool x, ref Vector3 deltaMovement) {
-            float deltaAxis = x ? deltaMovement.x : deltaMovement.y;
+        private void MoveHorizontally(ref Vector3 deltaMovement) {
+            var isGoingRight = deltaMovement.x > 0;
+            var rayDistance = Mathf.Abs(deltaMovement.x) + this.rayOffset;
+            var rayDirection = isGoingRight ? Vector2.right : -Vector2.right;
+            var initialRayOrigin = isGoingRight ? this.raycastOrigins.bottomRight : this.raycastOrigins.bottomLeft;
 
-            void SetDeltaAxis(ref Vector3 dm) {
-                if (x) {
-                    dm.x = deltaAxis;
-                } else {
-                    dm.y = deltaAxis;
-                }
-            }
-            
-            // "Positive movement" corresponds to to right for X and up for Y.
-            bool isMovingPositively = x ? deltaMovement.x > 0 : deltaMovement.y > 0;
-            float rayDistance = Mathf.Abs(deltaAxis) + this.rayOffset;
+            for (var i = 0; i < totalHorizontalRays; i++) {
+                var ray = new Vector2(initialRayOrigin.x, initialRayOrigin.y + i * this.verticalDistanceBetweenRays);
 
-            Vector3 rayDirection = isMovingPositively ?
-                x ? Vector3.right : Vector3.up :
-                x ? Vector3.left : Vector3.down;
+                Debug.DrawRay(ray, rayDirection * rayDistance, Color.red);
 
-            Vector2 initialRayOrigin = isMovingPositively ?
-                x ? this.raycastOrigins.bottomRight : this.raycastOrigins.topLeft :
-                this.raycastOrigins.bottomLeft;
+                if (i == 0 && collisionState.wasGroundedLastFrame)
+                    this.raycastHit = Physics2D.Raycast(ray, rayDirection, rayDistance, platformMask);
+                else
+                    this.raycastHit = Physics2D.Raycast(ray, rayDirection, rayDistance, platformMask & ~oneWayPlatformMask);
 
-            if (!x) {
-                // Y movement gets called after X; Hence, account for the delta movement.
-                initialRayOrigin.x += deltaMovement.x;
-
-                // Do not collide with the oneWayPlatformMask layer when moving upwards.
-                LayerMask mask = this.platformMask;
-                if (isMovingPositively && !this.collisionState.wasGroundedLastFrame || this.ignoreOneWayPlatformsThisFrame)
-                    mask &= ~this.oneWayPlatformMask;
-            }
-
-            for (int i = 0; i < (x ? this.totalHorizontalRays : this.totalVerticalRays); i++) {
-                Vector2 ray = new Vector2(initialRayOrigin.x, initialRayOrigin.y + i * this.verticalDistanceBetweenRays);
-
-                DrawRay(ray, rayDirection * rayDistance, Color.red);
-
-                // TODO Fix this if it doesn't work.
-                if (i == 0 && this.collisionState.wasGroundedLastFrame) {
-                    this.raycastHit = Physics2D.Raycast(ray, rayDirection, rayDistance, this.platformMask);
-                } else {
-                    this.raycastHit = Physics2D.Raycast(ray, rayDirection, rayDistance, this.platformMask & ~this.oneWayPlatformMask);
-                }
-
-                // Let the bottom ray hit slopes.
-                if (x && i == 0 && HandleHorizontalSlope(ref deltaMovement,
-                    Vector2.Angle(this.raycastHit.normal, Vector2.up))) {
-                    this.frameRaycastCache.Add(this.raycastHit);
-
-                    // If not grounded from the last frame, land on the slope.
-                    if (!this.collisionState.wasGroundedLastFrame) {
-                        float flushDistance = Mathf.Sign(deltaMovement.x) * (this.raycastHit.distance - RayOffset);
-                        transform.Translate(new Vector2(flushDistance, 0));
+                if (this.raycastHit) {
+                    if (i == 0 && HandleHorizontalSlope(ref deltaMovement, Vector2.Angle(this.raycastHit.normal, Vector2.up))) {
+                        this.frameRaycastCache.Add(this.raycastHit);
+                        if (!collisionState.wasGroundedLastFrame) {
+                            float flushDistance = Mathf.Sign(deltaMovement.x) * (this.raycastHit.distance - this.rayOffset);
+                            transform.Translate(new Vector2(flushDistance, 0));
+                        }
+                        break;
                     }
 
-                    break;
+                    deltaMovement.x = this.raycastHit.point.x - ray.x;
+                    rayDistance = Mathf.Abs(deltaMovement.x);
+
+                    if (isGoingRight) {
+                        deltaMovement.x -= this.rayOffset;
+                        collisionState.right = true;
+                    } else {
+                        deltaMovement.x += this.rayOffset;
+                        collisionState.left = true;
+                    }
+
+                    this.frameRaycastCache.Add(this.raycastHit);
+
+                    if (rayDistance < this.rayOffset + kRayOffsetFloatFudgeFactor)
+                        break;
                 }
-
-                deltaAxis = x ? this.raycastHit.point.x - ray.x : this.raycastHit.point.y - ray.y;
-                rayDistance = Mathf.Abs(deltaAxis);
-                deltaAxis += isMovingPositively ? -this.rayOffset : this.rayOffset;
-
-                if (x && isMovingPositively) {
-                    this.collisionState.right = true;
-                } else if (x) {
-                    this.collisionState.left = true;
-                } else if (isMovingPositively) {
-                    this.collisionState.above = true;
-                } else {
-                    this.collisionState.below = true;
-                }
-
-                this.frameRaycastCache.Add(this.raycastHit);
-
-                // Ensure the character remains grounded (Y) when on a slope's edge.
-                if (!x && !isMovingPositively && deltaAxis > 0.00001f)
-                    this.isGoingUpSlope = true;
-
-                if (rayDistance < this.rayOffset + krayOffsetFloatFudgeFactor)
-                    break;
             }
-            
-            SetDeltaAxis(ref deltaMovement);
+        }
+
+        private void MoveVertically(ref Vector3 deltaMovement) {
+            var isGoingUp = deltaMovement.y > 0;
+            var rayDistance = Mathf.Abs(deltaMovement.y) + this.rayOffset;
+            var rayDirection = isGoingUp ? Vector2.up : -Vector2.up;
+            var initialRayOrigin = isGoingUp ? this.raycastOrigins.topLeft : this.raycastOrigins.bottomLeft;
+
+            initialRayOrigin.x += deltaMovement.x;
+
+            var mask = platformMask;
+            if ((isGoingUp && !collisionState.wasGroundedLastFrame) || ignoreOneWayPlatformsThisFrame)
+                mask &= ~oneWayPlatformMask;
+
+            for (var i = 0; i < totalVerticalRays; i++) {
+                var ray = new Vector2(initialRayOrigin.x + i * this.horizontalDistanceBetweenRays, initialRayOrigin.y);
+
+                Debug.DrawRay(ray, rayDirection * rayDistance, Color.red);
+                this.raycastHit = Physics2D.Raycast(ray, rayDirection, rayDistance, mask);
+                if (this.raycastHit) {
+                    deltaMovement.y = this.raycastHit.point.y - ray.y;
+                    rayDistance = Mathf.Abs(deltaMovement.y);
+
+                    if (isGoingUp) {
+                        deltaMovement.y -= this.rayOffset;
+                        collisionState.above = true;
+                    } else {
+                        deltaMovement.y += this.rayOffset;
+                        collisionState.below = true;
+                    }
+
+                    this.frameRaycastCache.Add(this.raycastHit);
+
+                    if (!isGoingUp && deltaMovement.y > 0.00001f)
+                        this.isGoingUpSlope = true;
+
+                    if (rayDistance < this.rayOffset + kRayOffsetFloatFudgeFactor)
+                        break;
+                }
+            }
         }
 
         private void HandleVerticalSlope(ref Vector3 deltaMovement) {
@@ -323,14 +314,14 @@ namespace CharacterControllers {
                 this.slopeLimitTangent * (this.raycastOrigins.bottomRight.x - centerOfCollider);
 
             Vector2 slopeRay = new Vector2(centerOfCollider, this.raycastOrigins.bottomLeft.y);
-            DrawRay(slopeRay, rayDirection * slopeCheckRayDistance, Color.yellow);
+            Debug.DrawRay(slopeRay, rayDirection * slopeCheckRayDistance, Color.yellow);
             this.raycastHit = Physics2D.Raycast(slopeRay, rayDirection, slopeCheckRayDistance, this.platformMask);
 
             if (!this.raycastHit)
                 return;
 
             float angle = Vector2.Angle(this.raycastHit.normal, Vector2.up);
-            if (angle < 0.00001)
+            if (angle == 0)
                 return;
 
             bool isMovingDownSlope = Mathf.Sign(this.raycastHit.normal.x) == Mathf.Sign(deltaMovement.x);
